@@ -2,109 +2,375 @@
 <html lang="zh">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Telegram 文件上传</title>
     <style>
         * {
             box-sizing: border-box;
-            font-family: "Segoe UI", "PingFang SC", "Helvetica Neue", sans-serif;
+            margin: 0;
+            padding: 0;
         }
 
         body {
-            background: #f7f9fc;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
             display: flex;
             justify-content: center;
             align-items: center;
-            height: 100vh;
-            margin: 0;
+            padding: 20px;
         }
 
-        .upload-box {
+        .container {
             background: white;
-            padding: 30px;
-            border-radius: 12px;
-            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.1);
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
             width: 100%;
-            max-width: 500px;
+            max-width: 700px;
+            padding: 40px;
+            animation: slideUp 0.5s ease-out;
         }
 
-        h2 {
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .header {
             text-align: center;
-            margin-bottom: 20px;
-            color: #333;
+            margin-bottom: 35px;
         }
 
-        input[type="password"] {
-            width: 100%;
-            padding: 10px;
-            margin-bottom: 15px;
-            border-radius: 6px;
-            border: 1px solid #ccc;
+        .header h1 {
+            color: #333;
+            font-size: 28px;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+
+        .header p {
+            color: #666;
+            font-size: 14px;
         }
 
         .drop-zone {
-            border: 2px dashed #ccc;
-            border-radius: 10px;
-            padding: 20px;
+            border: 3px dashed #ddd;
+            border-radius: 15px;
+            padding: 50px 20px;
             text-align: center;
-            color: #aaa;
-            margin-bottom: 20px;
+            color: #999;
             cursor: pointer;
+            transition: all 0.3s ease;
+            background: #fafafa;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .drop-zone::before {
+            content: '📁';
+            font-size: 60px;
+            display: block;
+            margin-bottom: 15px;
+            animation: float 3s ease-in-out infinite;
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-10px); }
+        }
+
+        .drop-zone:hover {
+            border-color: #667eea;
+            background: #f0f4ff;
+            transform: scale(1.02);
         }
 
         .drop-zone.dragover {
-            background-color: #f0f8ff;
-            border-color: #4a90e2;
-            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-color: #667eea;
+            color: white;
+        }
+
+        .drop-zone.dragover::before {
+            content: '📥';
+        }
+
+        .drop-zone-text {
+            font-size: 16px;
+            font-weight: 500;
+        }
+
+        .drop-zone-hint {
+            font-size: 13px;
+            margin-top: 8px;
+            opacity: 0.7;
         }
 
         #file-list {
-            margin-top: 10px;
+            margin-top: 25px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        #file-list::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        #file-list::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 10px;
+        }
+
+        #file-list::-webkit-scrollbar-thumb {
+            background: #667eea;
+            border-radius: 10px;
         }
 
         .file-item {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 12px;
+            margin-bottom: 15px;
+            border: 1px solid #e9ecef;
+            transition: all 0.3s ease;
+        }
+
+        .file-item:hover {
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            transform: translateY(-2px);
+        }
+
+        .file-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
             margin-bottom: 12px;
         }
 
-        .progress-bar {
-            background-color: #e0e0e0;
-            border-radius: 5px;
+        .file-name {
+            font-weight: 600;
+            color: #333;
+            font-size: 15px;
+            flex: 1;
             overflow: hidden;
-            height: 10px;
-            margin-top: 5px;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            margin-right: 15px;
+        }
+
+        .file-size {
+            color: #666;
+            font-size: 13px;
+            white-space: nowrap;
+        }
+
+        .progress-bar {
+            background-color: #e9ecef;
+            border-radius: 10px;
+            overflow: hidden;
+            height: 8px;
+            margin-top: 10px;
+            position: relative;
         }
 
         .progress-bar-inner {
             height: 100%;
-            background-color: #4a90e2;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
             width: 0%;
+            transition: width 0.3s ease;
+            border-radius: 10px;
         }
 
-        button {
+        .file-status {
+            font-size: 12px;
+            color: #666;
+            margin-top: 8px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .upload-btn {
             width: 100%;
-            background-color: #4a90e2;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
-            padding: 12px;
+            padding: 16px;
             border: none;
-            border-radius: 6px;
+            border-radius: 12px;
             font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 25px;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .upload-btn:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+        }
+
+        .upload-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+
+        /* Modal styles */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 9999;
+            justify-content: center;
+            align-items: center;
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .modal-content {
+            background: white;
+            max-height: 90vh;
+            overflow-y: auto;
+            width: 90%;
+            max-width: 800px;
+            padding: 40px;
+            border-radius: 20px;
+            animation: modalSlideUp 0.4s ease;
+        }
+
+        .modal-content::-webkit-scrollbar {
+            width: 10px;
+        }
+
+        .modal-content::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 10px;
+        }
+
+        .modal-content::-webkit-scrollbar-thumb {
+            background: #667eea;
+            border-radius: 10px;
+        }
+
+        @keyframes modalSlideUp {
+            from {
+                opacity: 0;
+                transform: scale(0.9) translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: scale(1) translateY(0);
+            }
+        }
+
+        .modal-content h3 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+            text-align: center;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        .modal-subtitle {
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 30px;
+        }
+
+        .result-item {
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            padding: 25px;
+            border-radius: 15px;
+            margin-bottom: 25px;
+            border: 1px solid #dee2e6;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+            transition: all 0.3s ease;
+        }
+
+        .result-item:hover {
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+            transform: translateY(-2px);
+        }
+
+        .close-btn {
+            width: 100%;
+            background: #6c757d;
+            color: white;
+            padding: 14px;
+            border: none;
+            border-radius: 10px;
+            font-size: 15px;
+            font-weight: 600;
             cursor: pointer;
             margin-top: 15px;
+            transition: all 0.2s ease;
         }
 
-        button:hover {
-            background-color: #357ac8;
+        .close-btn:hover {
+            background: #5a6268;
         }
 
-        button:disabled {
-            background-color: #ccc;
-            cursor: not-allowed;
+        .stats {
+            display: flex;
+            justify-content: space-around;
+            margin-top: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 10px;
         }
 
-        textarea {
-            width: 100%;
+        .stat-item {
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: 700;
+            color: #667eea;
+            display: block;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: #666;
             margin-top: 5px;
-            font-size: 13px;
-            font-family: monospace;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 25px;
+            }
+
+            .header h1 {
+                font-size: 24px;
+            }
+
+            .drop-zone {
+                padding: 40px 15px;
+            }
+
+            .modal-content {
+                padding: 25px;
+            }
         }
     </style>
     <script>
@@ -112,24 +378,42 @@
             window.location.href = "login.html";
         }
     </script>
-
 </head>
 <body>
-<div class="upload-box">
-    <h2>上传文件到 Telegram</h2>
-    <div class="drop-zone" id="drop-zone">拖拽文件到此处，或点击选择</div>
+<div class="container">
+    <div class="header">
+        <h1>📤 Telegram Cloud Storage</h1>
+        <p>安全、快速、无限容量的文件存储服务</p>
+    </div>
+
+    <div class="drop-zone" id="drop-zone">
+        <div class="drop-zone-text">拖拽文件到此处，或点击选择</div>
+        <div class="drop-zone-hint">支持任意格式，自动分片处理大文件</div>
+    </div>
     <input type="file" id="file-input" multiple style="display: none;">
+
+    <div class="stats" id="stats" style="display: none;">
+        <div class="stat-item">
+            <span class="stat-value" id="file-count">0</span>
+            <span class="stat-label">待上传文件</span>
+        </div>
+        <div class="stat-item">
+            <span class="stat-value" id="total-size">0 MB</span>
+            <span class="stat-label">总大小</span>
+        </div>
+    </div>
+
     <div id="file-list"></div>
-    <button id="upload-btn" onclick="uploadFiles()">开始上传</button>
+    <button id="upload-btn" class="upload-btn" onclick="uploadFiles()">🚀 开始上传</button>
 </div>
 
 <!-- 弹窗 -->
-<div id="result-modal"
-     style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.6); z-index:9999; justify-content:center; align-items:center;">
-    <div style="background:white; max-height:90vh; overflow-y:auto; width:90%; max-width:600px; padding:20px; border-radius:10px;">
-        <h3>上传成功 🎉</h3>
+<div id="result-modal" class="modal">
+    <div class="modal-content">
+        <h3>🎉 上传成功</h3>
+        <p class="modal-subtitle">文件已安全存储到 Telegram 云端，以下是您的下载链接</p>
         <div id="result-links"></div>
-        <button onclick="closeModal()" style="margin-top:15px;">关闭</button>
+        <button onclick="closeModal()" class="close-btn">关闭窗口</button>
     </div>
 </div>
 
@@ -138,6 +422,27 @@
     const fileInput = document.getElementById("file-input");
     const fileList = document.getElementById("file-list");
     let selectedFiles = [];
+
+    // Default values, will be overridden by server config
+    let CHUNK_SIZE = 20 * 1024 * 1024; // 20MB per chunk
+    let CONCURRENT_UPLOADS = 4; // Number of concurrent chunk uploads
+    let CONCURRENT_FILES = 3; // Number of concurrent file uploads
+
+    // Fetch config from server
+    (async function loadConfig() {
+        try {
+            const response = await fetch("/config");
+            if (response.ok) {
+                const config = await response.json();
+                CHUNK_SIZE = config.chunk_size_mb * 1024 * 1024;
+                CONCURRENT_UPLOADS = config.chunk_concurrent;
+                CONCURRENT_FILES = config.files_concurrent;
+                console.log("Server config loaded:", config);
+            }
+        } catch (e) {
+            console.warn("Failed to load server config, using defaults:", e);
+        }
+    })();
 
     dropZone.addEventListener("click", () => fileInput.click());
     dropZone.addEventListener("dragover", e => {
@@ -155,98 +460,262 @@
     function handleFiles(files) {
         selectedFiles = Array.from(files);
         fileList.innerHTML = "";
+        
+        if (selectedFiles.length > 0) {
+            document.getElementById('stats').style.display = 'flex';
+            document.getElementById('file-count').textContent = selectedFiles.length;
+            const totalBytes = selectedFiles.reduce((sum, file) => sum + file.size, 0);
+            document.getElementById('total-size').textContent = formatSize(totalBytes);
+        } else {
+            document.getElementById('stats').style.display = 'none';
+        }
+        
         selectedFiles.forEach((file, index) => {
             const div = document.createElement("div");
             div.className = "file-item";
-            div.innerHTML = `<strong>${file.name}</strong><div class="progress-bar"><div id="bar-${index}" class="progress-bar-inner"></div></div>`;
+            div.innerHTML = `
+                <div class="file-info">
+                    <div class="file-name">📄 ${file.name}</div>
+                    <div class="file-size">${formatSize(file.size)}</div>
+                </div>
+                <div class="progress-bar">
+                    <div id="bar-${index}" class="progress-bar-inner"></div>
+                </div>
+                <div id="status-${index}" class="file-status">等待上传...</div>
+            `;
             fileList.appendChild(div);
         });
+    }
+
+    function formatSize(bytes) {
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB';
+        if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+        return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
     }
 
     let uploadResponses = [];
     let filesUploaded = 0;
 
-    function uploadFiles() {
+    async function uploadFiles() {
         const pwd = sessionStorage.getItem("pwd");
 
         const uploadBtn = document.getElementById("upload-btn");
         uploadBtn.disabled = true;
-        uploadBtn.textContent = "上传中...";
+        uploadBtn.innerHTML = "⏳ 上传中...";
 
         uploadResponses = [];
         filesUploaded = 0;
 
-        selectedFiles.forEach((file, index) => {
+        // Concurrent file upload
+        const fileQueue = new UploadQueue(CONCURRENT_FILES);
+        const uploadTasks = [];
+
+        for (let index = 0; index < selectedFiles.length; index++) {
+            const file = selectedFiles[index];
+            const task = fileQueue.add(async () => {
+                try {
+                    const result = await uploadSingleFile(file, index, pwd);
+                    uploadResponses.push(result);
+                } catch (e) {
+                    alert(`文件 ${file.name} 上传失败: ${e.message}`);
+                }
+                filesUploaded++;
+            });
+            uploadTasks.push(task);
+        }
+
+        await Promise.all(uploadTasks);
+
+        uploadBtn.disabled = false;
+        uploadBtn.innerHTML = "🚀 开始上传";
+        showResultModal(uploadResponses);
+    }
+
+    // Concurrent upload queue manager
+    class UploadQueue {
+        constructor(concurrency) {
+            this.concurrency = concurrency;
+            this.running = 0;
+            this.queue = [];
+        }
+
+        async add(task) {
+            while (this.running >= this.concurrency) {
+                await new Promise(resolve => this.queue.push(resolve));
+            }
+            this.running++;
+            try {
+                return await task();
+            } finally {
+                this.running--;
+                const resolve = this.queue.shift();
+                if (resolve) resolve();
+            }
+        }
+    }
+
+    async function uploadSingleFile(file, index, pwd) {
+        const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+        const statusEl = document.getElementById(`status-${index}`);
+        const progressBar = document.getElementById(`bar-${index}`);
+
+        // Small file: upload directly
+        if (file.size <= CHUNK_SIZE) {
+            statusEl.textContent = "上传中...";
             const formData = new FormData();
             formData.append("pwd", pwd);
             formData.append("file", file);
 
-            const xhr = new XMLHttpRequest();
-            xhr.open("POST", "/upload", true);
+            const response = await fetch("/upload", {
+                method: "POST",
+                body: formData
+            });
 
-            xhr.upload.onprogress = e => {
-                if (e.lengthComputable) {
-                    const percent = (e.loaded / e.total) * 100;
-                    document.getElementById(`bar-${index}`).style.width = percent + "%";
+            if (!response.ok) {
+                throw new Error(await response.text());
+            }
+
+            progressBar.style.width = "100%";
+            statusEl.textContent = "✅ 完成";
+            return await response.json();
+        }
+
+        // Large file: concurrent chunk upload
+        statusEl.textContent = `分片上传 (共 ${totalChunks} 片，并发数: ${CONCURRENT_UPLOADS})...`;
+        const chunkIds = new Array(totalChunks);
+        let uploadedChunks = 0;
+        const queue = new UploadQueue(CONCURRENT_UPLOADS);
+
+        // Create all upload tasks
+        const uploadTasks = [];
+        for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+            const task = queue.add(async () => {
+                const start = chunkIndex * CHUNK_SIZE;
+                const end = Math.min(start + CHUNK_SIZE, file.size);
+                const chunk = file.slice(start, end);
+
+                const formData = new FormData();
+                formData.append("pwd", pwd);
+                formData.append("chunk", chunk);
+                formData.append("chunk_index", chunkIndex);
+                formData.append("total_chunks", totalChunks);
+                formData.append("filename", file.name);
+
+                const response = await fetch("/upload_chunk", {
+                    method: "POST",
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    throw new Error(`分片 ${chunkIndex + 1} 上传失败: ${await response.text()}`);
                 }
-            };
 
-            xhr.onload = () => {
-                filesUploaded++;
-                if (xhr.status === 200) {
-                    try {
-                        const data = JSON.parse(xhr.responseText);
-                        uploadResponses.push(data);
-                    } catch (e) {
-                        alert("响应格式错误：" + xhr.responseText);
-                    }
-                } else {
-                    alert(`上传失败：${xhr.statusText}`);
-                }
+                const data = await response.json();
+                chunkIds[chunkIndex] = data.file_id;
 
-                if (filesUploaded === selectedFiles.length) {
-                    uploadBtn.disabled = false;
-                    uploadBtn.textContent = "开始上传";
-                    showResultModal(uploadResponses);
-                }
-            };
+                uploadedChunks++;
+                const percent = (uploadedChunks / totalChunks) * 100;
+                progressBar.style.width = percent + "%";
+                statusEl.textContent = `上传分片 ${uploadedChunks}/${totalChunks}...`;
+            });
+            uploadTasks.push(task);
+        }
 
-            xhr.send(formData);
+        // Wait for all chunks to upload
+        await Promise.all(uploadTasks);
+
+        // Merge chunks
+        statusEl.textContent = "合并分片...";
+        const mergeFormData = new FormData();
+        mergeFormData.append("pwd", pwd);
+        mergeFormData.append("filename", file.name);
+        mergeFormData.append("chunk_ids", JSON.stringify(chunkIds));
+
+        const mergeResponse = await fetch("/merge_chunks", {
+            method: "POST",
+            body: mergeFormData
         });
+
+        if (!mergeResponse.ok) {
+            throw new Error("合并失败: " + await mergeResponse.text());
+        }
+
+        statusEl.textContent = "✅ 完成";
+        return await mergeResponse.json();
     }
 
     function showResultModal(list) {
         const container = document.getElementById("result-links");
         container.innerHTML = "";
-        list.forEach(file => {
-            const html = `<a href=\"${file.download_url}\" target=\"_blank\">点击下载</a>`;
+        
+        list.forEach((file, index) => {
+            const html = `<a href="${file.download_url}" target="_blank">点击下载</a>`;
             const md = `[点击下载](${file.download_url})`;
             const bb = `[url=${file.download_url}]点击下载[/url]`;
 
             const div = document.createElement("div");
-            div.style.marginBottom = "20px";
+            div.className = "result-item";
             div.innerHTML = `
-          <strong>${file.filename}</strong><br>
-          <textarea readonly>${file.download_url}</textarea>
-          <button onclick=\"copyText(this)\">复制 URL</button><br>
-          <textarea readonly>${html}</textarea>
-          <button onclick=\"copyText(this)\">复制 HTML</button><br>
-          <textarea readonly>${md}</textarea>
-          <button onclick=\"copyText(this)\">复制 Markdown</button><br>
-          <textarea readonly>${bb}</textarea>
-          <button onclick=\"copyText(this)\">复制 BBCode</button>
-        `;
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                    <strong style="font-size: 16px; color: #333;">📄 ${file.filename}</strong>
+                    <a href="${file.download_url}" target="_blank" style="background: #28a745; color: white; padding: 6px 12px; border-radius: 6px; text-decoration: none; font-size: 13px;">🔗 直接下载</a>
+                </div>
+                
+                <div style="background: white; border-radius: 8px; padding: 15px; margin-bottom: 12px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <span style="font-size: 13px; font-weight: 600; color: #666;">🔗 URL 链接</span>
+                        <button onclick="copyText(this, 'URL')" style="background: #667eea; color: white; border: none; padding: 5px 12px; border-radius: 5px; cursor: pointer; font-size: 12px;">📋 复制</button>
+                    </div>
+                    <textarea readonly style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 12px; font-family: monospace; background: #fafafa; resize: none; height: 40px;">${file.download_url}</textarea>
+                </div>
+                
+                <div style="background: white; border-radius: 8px; padding: 15px; margin-bottom: 12px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <span style="font-size: 13px; font-weight: 600; color: #666;">🌐 HTML 代码</span>
+                        <button onclick="copyText(this, 'HTML')" style="background: #667eea; color: white; border: none; padding: 5px 12px; border-radius: 5px; cursor: pointer; font-size: 12px;">📋 复制</button>
+                    </div>
+                    <textarea readonly style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 12px; font-family: monospace; background: #fafafa; resize: none; height: 40px;">${html}</textarea>
+                </div>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                    <div style="background: white; border-radius: 8px; padding: 12px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <span style="font-size: 12px; font-weight: 600; color: #666;">📝 Markdown</span>
+                            <button onclick="copyText(this, 'Markdown')" style="background: #667eea; color: white; border: none; padding: 4px 10px; border-radius: 5px; cursor: pointer; font-size: 11px;">复制</button>
+                        </div>
+                        <textarea readonly style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 11px; font-family: monospace; background: #fafafa; resize: none; height: 36px;">${md}</textarea>
+                    </div>
+                    
+                    <div style="background: white; border-radius: 8px; padding: 12px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <span style="font-size: 12px; font-weight: 600; color: #666;">💬 BBCode</span>
+                            <button onclick="copyText(this, 'BBCode')" style="background: #667eea; color: white; border: none; padding: 4px 10px; border-radius: 5px; cursor: pointer; font-size: 11px;">复制</button>
+                        </div>
+                        <textarea readonly style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 11px; font-family: monospace; background: #fafafa; resize: none; height: 36px;">${bb}</textarea>
+                    </div>
+                </div>
+            `;
             container.appendChild(div);
         });
+        
         document.getElementById("result-modal").style.display = "flex";
     }
 
-    function copyText(btn) {
-        const textarea = btn.previousElementSibling;
+    function copyText(btn, type) {
+        const container = btn.closest('div').parentElement;
+        const textarea = container.querySelector('textarea');
         textarea.select();
         document.execCommand("copy");
-        btn.textContent = "✅ 已复制！";
-        setTimeout(() => btn.textContent = "复制", 1500);
+        
+        const originalText = btn.textContent;
+        btn.textContent = "✅ 已复制";
+        btn.style.background = "#28a745";
+        
+        setTimeout(() => {
+            btn.textContent = originalText;
+            btn.style.background = "#667eea";
+        }, 2000);
     }
 
     function closeModal() {

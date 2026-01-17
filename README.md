@@ -54,8 +54,28 @@ CHAT_ID=6194666666
 ACCESS_PWD=yohann
 PROXY=
 BASE_URL=
+
+# Thread configuration (optional)
+# Download threads for concurrent chunk download (default: 8)
+DOWNLOAD_THREADS=8
+# Frontend chunk size in MB (default: 20, due to Telegram limits)
+CHUNK_SIZE_MB=20
+# Frontend chunk upload concurrency (default: 4)
+CHUNK_CONCURRENT=4
+# Frontend file upload concurrency (default: 2)
+FILES_CONCURRENT=5
 EOF
 ```
+
+**配置说明：**
+
+| 配置项 | 说明 | 默认值 | 建议值  |
+|--------|------|-----|------|
+| `DOWNLOAD_THREADS` | 后端分片下载并发数 | 8   | 4-8  |
+| `CHUNK_SIZE_MB` | 分片大小（MB） | 20  | 5-20 |
+| `CHUNK_CONCURRENT` | 前端分片上传并发数 | 4   | 3-6  |
+| `FILES_CONCURRENT` | 前端文件上传并发数 | 5   | 1-5  |
+
 
 #### 2. docker-compose 一键部署
 

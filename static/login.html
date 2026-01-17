@@ -2,74 +2,184 @@
 <html lang="zh">
 <head>
     <meta charset="UTF-8">
-    <title>登录验证</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录验证 - Telegram Cloud Storage</title>
     <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
         body {
-            font-family: "Segoe UI", "PingFang SC", "Helvetica Neue", sans-serif;
-            background: #f4f6f8;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
             display: flex;
             justify-content: center;
             align-items: center;
-            height: 100vh;
-            margin: 0;
+            padding: 20px;
         }
 
-        .login-box {
+        .login-container {
             background: white;
-            padding: 30px;
-            border-radius: 10px;
-            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.1);
+            padding: 50px 40px;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
             width: 100%;
-            max-width: 400px;
+            max-width: 420px;
             text-align: center;
+            animation: slideUp 0.5s ease-out;
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .logo {
+            font-size: 64px;
+            margin-bottom: 20px;
+            animation: float 3s ease-in-out infinite;
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-10px); }
         }
 
         h2 {
-            margin-bottom: 20px;
+            margin-bottom: 10px;
             font-weight: 600;
             color: #333;
+            font-size: 26px;
+        }
+
+        .subtitle {
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 35px;
+        }
+
+        .input-group {
+            position: relative;
+            margin-bottom: 25px;
+        }
+
+        .input-icon {
+            position: absolute;
+            left: 15px;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 20px;
+            color: #999;
         }
 
         input[type="password"] {
-            width: 93%;
-            padding: 12px;
-            margin-bottom: 12px;
-            border: 1px solid #ccc;
-            border-radius: 6px;
+            width: 100%;
+            padding: 15px 15px 15px 50px;
+            border: 2px solid #e9ecef;
+            border-radius: 12px;
             font-size: 15px;
+            transition: all 0.3s ease;
+            background: #f8f9fa;
+        }
+
+        input[type="password"]:focus {
+            outline: none;
+            border-color: #667eea;
+            background: white;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
         }
 
         button {
             width: 100%;
-            padding: 12px;
-            background-color: #4a90e2;
+            padding: 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             border: none;
-            border-radius: 6px;
+            border-radius: 12px;
             font-size: 16px;
+            font-weight: 600;
             cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
         }
 
         button:hover {
-            background-color: #357ac8;
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+        }
+
+        button:active {
+            transform: translateY(0);
         }
 
         .error {
-            margin-top: 10px;
+            margin-top: 15px;
             font-size: 14px;
             color: #e53935;
-            text-align: left;
-            padding-left: 2px;
+            background: #ffebee;
+            padding: 12px;
+            border-radius: 8px;
+            display: none;
+            animation: shake 0.5s ease;
         }
 
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-10px); }
+            75% { transform: translateX(10px); }
+        }
+
+        .error.show {
+            display: block;
+        }
+
+        .footer {
+            margin-top: 30px;
+            font-size: 12px;
+            color: #999;
+        }
+
+        @media (max-width: 480px) {
+            .login-container {
+                padding: 40px 25px;
+            }
+
+            h2 {
+                font-size: 22px;
+            }
+        }
     </style>
 </head>
 <body>
-<div class="login-box">
-    <h2>请输入访问密码</h2>
-    <input type="password" id="pwd" placeholder="密码" onkeydown="if(event.key === 'Enter') submitPwd();">
-    <button onclick="submitPwd()">进入</button>
-    <div class="error" id="error-msg"></div>
+<div class="login-container">
+    <div class="logo">🔐</div>
+    <h2>Telegram Cloud Storage</h2>
+    <p class="subtitle">请输入访问密码以继续</p>
+    
+    <div class="input-group">
+        <span class="input-icon">🔑</span>
+        <input type="password" id="pwd" placeholder="请输入密码" onkeydown="if(event.key === 'Enter') submitPwd();" autofocus>
+    </div>
+    
+    <button onclick="submitPwd()">🚀 进入系统</button>
+    
+    <div class="error" id="error-msg">
+        <strong>⚠️ 密码错误</strong><br>
+        <span>请检查您的密码后重试</span>
+    </div>
+    
+    <div class="footer">
+        安全 · 快速 · 无限容量
+    </div>
 </div>
 
 <script>
@@ -81,7 +191,15 @@
 
     function submitPwd() {
         const pwd = document.getElementById("pwd").value;
-        if (!pwd) return;
+        const errorMsg = document.getElementById("error-msg");
+        
+        if (!pwd) {
+            errorMsg.querySelector('span').textContent = "密码不能为空";
+            errorMsg.classList.add("show");
+            return;
+        }
+
+        errorMsg.classList.remove("show");
 
         const form = new FormData();
         form.append("pwd", pwd);
@@ -95,14 +213,18 @@
                     sessionStorage.setItem("pwd", pwd);
                     window.location.href = "upload.html";
                 } else {
-                    document.getElementById("error-msg").textContent = "密码错误";
+                    errorMsg.querySelector('span').textContent = "请检查您的密码后重试";
+                    errorMsg.classList.add("show");
+                    document.getElementById("pwd").value = "";
+                    document.getElementById("pwd").focus();
                 }
             })
             .catch(() => {
-                document.getElementById("error-msg").textContent = "请求失败";
+                errorMsg.querySelector('strong').textContent = "⚠️ 请求失败";
+                errorMsg.querySelector('span').textContent = "无法连接到服务器，请检查网络";
+                errorMsg.classList.add("show");
             });
     }
-
 </script>
 </body>
 </html>

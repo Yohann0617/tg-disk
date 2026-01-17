@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/joho/godotenv"
 	"io"
 	"io/fs"
 	"log"
@@ -15,10 +13,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/joho/godotenv"
 )
 
 //go:embed static/*
@@ -38,10 +38,13 @@ func (s staticFS) Open(name string) (http.File, error) {
 }
 
 var (
-	bot           *tgbotapi.BotAPI
-	chatID        int64
-	accessPwd     string
-	threadNumbers = 4 // 由于 TG API 限制最大并发数，所以线程数设置为4
+	bot                *tgbotapi.BotAPI
+	chatID             int64
+	accessPwd          string
+	downloadThreads    = 8  // Download concurrent threads (can be higher)
+	frontendChunkSize  = 20 // Frontend chunk size in MB
+	frontendConcurrent = 8  // Frontend chunk upload concurrency
+	frontendFilesLimit = 5  // Frontend file upload concurrency
 )
 
 func main() {
@@ -99,6 +102,31 @@ func main() {
 	proxyStr := os.Getenv("PROXY")
 	chatIDStr := os.Getenv("CHAT_ID")
 	baseURL := os.Getenv("BASE_URL")
+
+	// Read thread configuration from environment
+	if downloadThreadsStr := os.Getenv("DOWNLOAD_THREADS"); downloadThreadsStr != "" {
+		if val, err := strconv.Atoi(downloadThreadsStr); err == nil && val > 0 {
+			downloadThreads = val
+		}
+	}
+	if chunkSizeStr := os.Getenv("CHUNK_SIZE_MB"); chunkSizeStr != "" {
+		if val, err := strconv.Atoi(chunkSizeStr); err == nil && val > 0 && val <= 50 {
+			frontendChunkSize = val
+		}
+	}
+	if concurrentStr := os.Getenv("CHUNK_CONCURRENT"); concurrentStr != "" {
+		if val, err := strconv.Atoi(concurrentStr); err == nil && val > 0 {
+			frontendConcurrent = val
+		}
+	}
+	if filesLimitStr := os.Getenv("FILES_CONCURRENT"); filesLimitStr != "" {
+		if val, err := strconv.Atoi(filesLimitStr); err == nil && val > 0 {
+			frontendFilesLimit = val
+		}
+	}
+
+	log.Printf("配置信息 - 下载线程: %d, 分片大小: %dMB, 分片并发: %d, 文件并发: %d",
+		downloadThreads, frontendChunkSize, frontendConcurrent, frontendFilesLimit)
 
 	// 检查必填
 	if port == "" && !envLoaded {
@@ -219,7 +247,10 @@ func main() {
 	}
 	http.Handle("/", http.FileServer(staticFS{http.FS(httpFS)}))
 	http.HandleFunc("/verify", handleVerify)
+	http.HandleFunc("/config", handleConfig)
 	http.HandleFunc("/upload", handleUpload)
+	http.HandleFunc("/upload_chunk", handleUploadChunk)
+	http.HandleFunc("/merge_chunks", handleMergeChunks)
 	http.HandleFunc("/d", handleDownload)
 
 	if port == "" {
@@ -235,6 +266,7 @@ type UploadResult struct {
 	DownloadURL string `json:"download_url"`
 }
 
+// handleUpload handles small file upload (<=20MB)
 func handleUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "只支持 POST", http.StatusMethodNotAllowed)
@@ -245,7 +277,6 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filesize := r.ContentLength
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		http.Error(w, "读取文件失败: "+err.Error(), http.StatusBadRequest)
@@ -261,127 +292,159 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	defer os.RemoveAll(tmpDir)
 
 	origFilename := header.Filename
-	const chunkSize = 20 * 1024 * 1024
-	var fileIDs []string
+	tmpPath := filepath.Join(tmpDir, origFilename)
+	tmp, err := os.Create(tmpPath)
+	if err != nil {
+		http.Error(w, "创建临时文件失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer tmp.Close()
 
-	// 小文件直接上传
-	if filesize > 0 && filesize <= chunkSize {
-		tmpPath := filepath.Join(tmpDir, origFilename)
-		tmp, err := os.Create(tmpPath)
-		if err != nil {
-			http.Error(w, "创建临时文件失败: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		defer tmp.Close()
-
-		_, err = io.Copy(tmp, file)
-		if err != nil {
-			http.Error(w, "写入临时文件失败: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		var fileId string
-		doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(tmpPath))
-		doc.Caption = origFilename
-		msg, err := bot.Send(doc)
-		if err != nil {
-			log.Println("上传到 Telegram 失败: "+err.Error(), err)
-			http.Error(w, "上传到 Telegram 失败: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if msg.Document != nil {
-			fileId = msg.Document.FileID
-		} else if msg.Video != nil {
-			fileId = msg.Video.FileID
-		} else if msg.Audio != nil {
-			fileId = msg.Audio.FileID
-		}
-
-		downloadURL := fmt.Sprintf("%s://%s/d?file_id=%s&filename=%s",
-			getScheme(r), r.Host, fileId, origFilename)
-
-		result := UploadResult{
-			Filename:    origFilename,
-			FileID:      fileId,
-			DownloadURL: downloadURL,
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(result)
+	_, err = io.Copy(tmp, file)
+	if err != nil {
+		http.Error(w, "写入临时文件失败: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// 读取文件并分块写入临时文件
-	chunkPaths := []string{}
-	buf := make([]byte, chunkSize)
-	index := 0
-	for {
-		n, err := io.ReadFull(file, buf)
-		if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
-			http.Error(w, "读取文件失败: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if n == 0 {
-			break
-		}
-		chunkPath := filepath.Join(tmpDir, fmt.Sprintf("blob_%d", index))
-		if err := os.WriteFile(chunkPath, buf[:n], 0644); err != nil {
-			http.Error(w, "写入临时分块失败: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		chunkPaths = append(chunkPaths, chunkPath)
-		index++
-		if err == io.EOF || n < chunkSize {
-			break
-		}
+	var fileId string
+	doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(tmpPath))
+	doc.Caption = origFilename
+	msg, err := bot.Send(doc)
+	if err != nil {
+		log.Println("上传到 Telegram 失败: "+err.Error(), err)
+		http.Error(w, "上传到 Telegram 失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if msg.Document != nil {
+		fileId = msg.Document.FileID
+	} else if msg.Video != nil {
+		fileId = msg.Video.FileID
+	} else if msg.Audio != nil {
+		fileId = msg.Audio.FileID
 	}
 
-	// 并发上传分块
-	type uploadResult struct {
-		Index  int
-		FileID string
-		Err    error
-	}
-	results := make([]uploadResult, len(chunkPaths))
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, threadNumbers)
+	downloadURL := fmt.Sprintf("%s://%s/d?file_id=%s&filename=%s",
+		getScheme(r), r.Host, fileId, origFilename)
 
-	for i, chunkPath := range chunkPaths {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(i int, path string) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(path))
-			doc.Caption = "blob"
-			msg, err := bot.Send(doc)
-			if err != nil {
-				results[i] = uploadResult{Index: i, Err: fmt.Errorf("上传失败: %v", err)}
-				return
-			}
-			if msg.Document == nil {
-				results[i] = uploadResult{Index: i, Err: fmt.Errorf("上传后未返回 Document")}
-				return
-			}
-			results[i] = uploadResult{Index: i, FileID: msg.Document.FileID}
-		}(i, chunkPath)
+	result := UploadResult{
+		Filename:    origFilename,
+		FileID:      fileId,
+		DownloadURL: downloadURL,
 	}
-	wg.Wait()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
 
-	// 检查结果
-	for _, res := range results {
-		if res.Err != nil {
-			http.Error(w, fmt.Sprintf("第 %d 个分块上传失败: %v", res.Index, res.Err), http.StatusInternalServerError)
-			return
-		}
-		fileIDs = append(fileIDs, res.FileID)
+// handleUploadChunk handles single chunk upload from frontend
+func handleUploadChunk(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "只支持 POST", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.FormValue("pwd") != accessPwd {
+		http.Error(w, "密码错误", http.StatusUnauthorized)
+		return
 	}
 
-	// 构建 fileAll.txt
+	chunk, _, err := r.FormFile("chunk")
+	if err != nil {
+		http.Error(w, "读取分片失败: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	defer chunk.Close()
+
+	chunkIndex := r.FormValue("chunk_index")
+	totalChunks := r.FormValue("total_chunks")
+	filename := r.FormValue("filename")
+
+	tmpDir, err := os.MkdirTemp("", "chunk_")
+	if err != nil {
+		http.Error(w, "创建临时目录失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer os.RemoveAll(tmpDir)
+
+	chunkPath := filepath.Join(tmpDir, "blob")
+	tmp, err := os.Create(chunkPath)
+	if err != nil {
+		http.Error(w, "创建临时文件失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer tmp.Close()
+
+	_, err = io.Copy(tmp, chunk)
+	if err != nil {
+		http.Error(w, "写入临时文件失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	tmp.Close()
+
+	// Build caption with chunk info
+	caption := fmt.Sprintf("blob [%s/%s] - %s", chunkIndex, totalChunks, filename)
+
+	// Upload chunk to Telegram
+	doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(chunkPath))
+	doc.Caption = caption
+	msg, err := bot.Send(doc)
+	if err != nil || msg.Document == nil {
+		http.Error(w, "上传分片到 Telegram 失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	type ChunkResult struct {
+		FileID string `json:"file_id"`
+	}
+
+	result := ChunkResult{
+		FileID: msg.Document.FileID,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+// handleMergeChunks creates fileAll.txt and uploads it to Telegram
+func handleMergeChunks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "只支持 POST", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.FormValue("pwd") != accessPwd {
+		http.Error(w, "密码错误", http.StatusUnauthorized)
+		return
+	}
+
+	filename := r.FormValue("filename")
+	chunkIDsJSON := r.FormValue("chunk_ids")
+
+	if filename == "" || chunkIDsJSON == "" {
+		http.Error(w, "缺少 filename 或 chunk_ids 参数", http.StatusBadRequest)
+		return
+	}
+
+	var chunkIDs []string
+	if err := json.Unmarshal([]byte(chunkIDsJSON), &chunkIDs); err != nil {
+		http.Error(w, "chunk_ids 格式错误: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if len(chunkIDs) == 0 {
+		http.Error(w, "chunk_ids 不能为空", http.StatusBadRequest)
+		return
+	}
+
+	// Build fileAll.txt content
 	builder := strings.Builder{}
-	builder.WriteString(origFilename + "\n")
-	for _, fid := range fileIDs {
+	builder.WriteString(filename + "\n")
+	for _, fid := range chunkIDs {
 		builder.WriteString(fid + "\n")
 	}
+
+	tmpDir, err := os.MkdirTemp("", "merge_")
+	if err != nil {
+		http.Error(w, "创建临时目录失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer os.RemoveAll(tmpDir)
 
 	metaPath := filepath.Join(tmpDir, "fileAll.txt")
 	if err := os.WriteFile(metaPath, []byte(builder.String()), 0644); err != nil {
@@ -389,9 +452,9 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 上传 fileAll.txt
+	// Upload fileAll.txt to Telegram
 	metaDoc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(metaPath))
-	metaDoc.Caption = origFilename
+	metaDoc.Caption = filename
 	msg, err := bot.Send(metaDoc)
 	if err != nil || msg.Document == nil {
 		http.Error(w, "上传 fileAll.txt 失败: "+err.Error(), http.StatusInternalServerError)
@@ -400,8 +463,9 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 
 	fileID := msg.Document.FileID
 	downloadURL := fmt.Sprintf("%s://%s/d?file_id=%s", getScheme(r), r.Host, fileID)
+
 	result := UploadResult{
-		Filename:    origFilename,
+		Filename:    filename,
 		FileID:      fileID,
 		DownloadURL: downloadURL,
 	}
@@ -422,9 +486,105 @@ func handleDownload(w http.ResponseWriter, r *http.Request) {
 	if filename != "" {
 		tgFile, err := bot.GetFile(tgbotapi.FileConfig{FileID: fileID})
 		if err != nil {
+			// Check if error is due to file being too large
+			errMsg := err.Error()
+			if strings.Contains(errMsg, "file is too big") || strings.Contains(errMsg, "Request Entity Too Large") {
+				// Return HTML page with error message and instructions
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.WriteHeader(http.StatusBadRequest)
+				fmt.Fprintf(w, `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>文件下载失败</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; }
+        .error { background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 20px; }
+        .error h2 { color: #856404; margin-top: 0; }
+        .solution { background: #d1ecf1; border: 1px solid #17a2b8; border-radius: 8px; padding: 20px; margin-top: 20px; }
+        .solution h3 { color: #0c5460; margin-top: 0; }
+        code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; }
+        ol { line-height: 1.8; }
+        .telegram-link { display: inline-block; background: #0088cc; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin-top: 10px; }
+        .telegram-link:hover { background: #006699; }
+    </style>
+</head>
+<body>
+    <div class="error">
+        <h2>⚠️ 文件大小超过限制</h2>
+        <p>此文件大小超过 Telegram Bot API 的 20MB 下载限制，无法通过此链接下载。</p>
+        <p><strong>文件名：</strong> %s</p>
+    </div>
+    
+    <div class="solution">
+        <h3>💡 解决方案</h3>
+        <p><strong>方法一：使用网页上传功能（推荐）</strong></p>
+        <ol>
+            <li>访问 <code>%s</code></li>
+            <li>通过网页上传此文件</li>
+            <li>系统会自动分片处理，支持任意大小文件</li>
+            <li>上传完成后获取新的下载链接</li>
+        </ol>
+        
+        <p><strong>方法二：直接在 Telegram 中下载</strong></p>
+        <p>在 Telegram 客户端中打开此文件即可直接下载（不受 20MB 限制）</p>
+        <a href="https://t.me/c/%d/%s" class="telegram-link" target="_blank">📱 在 Telegram 中打开</a>
+    </div>
+</body>
+</html>
+`, filename, getScheme(r)+"://"+r.Host, chatID, fileID)
+				return
+			}
 			http.Error(w, "获取文件失败: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		// Additional check: Bot API has 20MB download limit
+		if tgFile.FileSize > 20*1024*1024 {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusBadRequest)
+			fileSize := float64(tgFile.FileSize) / (1024 * 1024)
+			fmt.Fprintf(w, `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>文件下载失败</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; }
+        .error { background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 20px; }
+        .error h2 { color: #856404; margin-top: 0; }
+        .solution { background: #d1ecf1; border: 1px solid #17a2b8; border-radius: 8px; padding: 20px; margin-top: 20px; }
+        .solution h3 { color: #0c5460; margin-top: 0; }
+        code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; }
+        ol { line-height: 1.8; }
+    </style>
+</head>
+<body>
+    <div class="error">
+        <h2>⚠️ 文件大小超过限制</h2>
+        <p>此文件大小为 <strong>%.2f MB</strong>，超过 Telegram Bot API 的 20MB 下载限制。</p>
+        <p><strong>文件名：</strong> %s</p>
+    </div>
+    
+    <div class="solution">
+        <h3>💡 解决方案</h3>
+        <p><strong>请使用网页上传功能（推荐）</strong></p>
+        <ol>
+            <li>访问 <code>%s</code></li>
+            <li>通过网页重新上传此文件</li>
+            <li>系统会自动分片处理，支持任意大小文件</li>
+            <li>上传完成后获取新的下载链接</li>
+        </ol>
+        <p style="color: #666; margin-top: 20px;">💡 提示：通过网页上传的大文件会自动分片，下载时无大小限制。</p>
+    </div>
+</body>
+</html>
+`, fileSize, filename, getScheme(r)+"://"+r.Host)
+			return
+		}
+
 		url := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", bot.Token, tgFile.FilePath)
 		resp, err := http.Get(url)
 		if err != nil {
@@ -517,21 +677,22 @@ func handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("开始下载合并大文件，文件名: %s，共 %d 个分块", origFilename, len(blobFileIDs))
+	log.Printf("开始流式下载合并大文件，文件名: %s，共 %d 个分块", origFilename, len(blobFileIDs))
 
-	// 并发下载每个块，顺序写入
-	type result struct {
+	// Concurrent download with streaming output
+	// Download multiple chunks concurrently, but write them in order
+	type chunkResult struct {
 		index int
 		data  []byte
 		err   error
 	}
 
-	var (
-		wg          sync.WaitGroup
-		sem         = make(chan struct{}, threadNumbers)
-		partData    = make([][]byte, len(blobFileIDs))
-		downloadErr error
-	)
+	// Channel to receive downloaded chunks
+	resultChan := make(chan chunkResult, len(blobFileIDs))
+
+	// Goroutine pool to download chunks concurrently
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, downloadThreads)
 
 	for i, fid := range blobFileIDs {
 		wg.Add(1)
@@ -542,50 +703,74 @@ func handleDownload(w http.ResponseWriter, r *http.Request) {
 
 			tgBlob, err := bot.GetFile(tgbotapi.FileConfig{FileID: fileID})
 			if err != nil {
-				downloadErr = fmt.Errorf("获取分块 %s 失败: %v", fileID, err)
+				resultChan <- chunkResult{index: index, err: fmt.Errorf("获取分块 %d 失败: %v", index, err)}
 				return
 			}
+
 			blobURL := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", bot.Token, tgBlob.FilePath)
 			resp, err := http.Get(blobURL)
 			if err != nil {
-				downloadErr = fmt.Errorf("下载分块 %s 失败: %v", fileID, err)
+				resultChan <- chunkResult{index: index, err: fmt.Errorf("下载分块 %d 失败: %v", index, err)}
 				return
 			}
 			defer resp.Body.Close()
 
 			if resp.StatusCode != http.StatusOK {
-				downloadErr = fmt.Errorf("下载分块 %s 状态码异常: %d", fileID, resp.StatusCode)
+				resultChan <- chunkResult{index: index, err: fmt.Errorf("下载分块 %d 状态码异常: %d", index, resp.StatusCode)}
 				return
 			}
 
 			data, err := io.ReadAll(resp.Body)
 			if err != nil {
-				downloadErr = fmt.Errorf("读取分块 %s 失败: %v", fileID, err)
+				resultChan <- chunkResult{index: index, err: fmt.Errorf("读取分块 %d 失败: %v", index, err)}
 				return
 			}
 
-			partData[index] = data
+			resultChan <- chunkResult{index: index, data: data}
+			log.Printf("已下载分块 %d/%d，大小: %d 字节", index+1, len(blobFileIDs), len(data))
 		}(i, fid)
 	}
 
-	wg.Wait()
+	// Close channel when all downloads complete
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
 
-	if downloadErr != nil {
-		http.Error(w, downloadErr.Error(), http.StatusInternalServerError)
-		return
-	}
+	// Collect results and maintain order
+	chunks := make([][]byte, len(blobFileIDs))
+	received := make([]bool, len(blobFileIDs))
+	receivedCount := 0
+	nextToWrite := 0
 
-	for i, data := range partData {
-		log.Printf("写入分块 %d/%d 字节数: %d", i+1, len(partData), len(data))
-		_, err := w.Write(data)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("写入响应失败（分块 %d）: %v", i, err), http.StatusInternalServerError)
+	for result := range resultChan {
+		if result.err != nil {
+			log.Printf("下载错误: %v", result.err)
+			http.Error(w, result.err.Error(), http.StatusInternalServerError)
 			return
 		}
-		flusher.Flush()
+
+		chunks[result.index] = result.data
+		received[result.index] = true
+		receivedCount++
+
+		// Write all consecutive chunks that are ready
+		for nextToWrite < len(blobFileIDs) && received[nextToWrite] {
+			log.Printf("写入分块 %d/%d，大小: %d 字节", nextToWrite+1, len(blobFileIDs), len(chunks[nextToWrite]))
+			_, err := w.Write(chunks[nextToWrite])
+			if err != nil {
+				log.Printf("写入响应失败（分块 %d）: %v", nextToWrite, err)
+				return
+			}
+			flusher.Flush()
+
+			// Free memory immediately after writing
+			chunks[nextToWrite] = nil
+			nextToWrite++
+		}
 	}
 
-	log.Printf("大文件合并下载完成: %s", origFilename)
+	log.Printf("流式下载完成: %s，共 %d 个分块", origFilename, len(blobFileIDs))
 }
 
 func handleVerify(w http.ResponseWriter, r *http.Request) {
@@ -605,6 +790,25 @@ func handleVerify(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func handleConfig(w http.ResponseWriter, r *http.Request) {
+	type ConfigResponse struct {
+		ChunkSizeMB     int `json:"chunk_size_mb"`
+		ChunkConcurrent int `json:"chunk_concurrent"`
+		FilesConcurrent int `json:"files_concurrent"`
+		DownloadThreads int `json:"download_threads"`
+	}
+
+	config := ConfigResponse{
+		ChunkSizeMB:     frontendChunkSize,
+		ChunkConcurrent: frontendConcurrent,
+		FilesConcurrent: frontendFilesLimit,
+		DownloadThreads: downloadThreads,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(config)
+}
+
 func getScheme(r *http.Request) string {
 	// 优先使用反向代理头部判断协议
 	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
@@ -621,49 +825,4 @@ func isPreviewable(contentType string) bool {
 		strings.HasPrefix(contentType, "video/") ||
 		strings.HasPrefix(contentType, "audio/") ||
 		contentType == "application/pdf"
-}
-
-func GetMaxConcurrency() int {
-	numCPU := runtime.NumCPU()
-	defaultConcurrency := numCPU // 适合 I/O 密集型任务，如上传、下载等
-
-	goos := runtime.GOOS
-	switch goos {
-	case "linux":
-		// 优先使用 /proc/sys/kernel/threads-max
-		if data, err := os.ReadFile("/proc/sys/kernel/threads-max"); err == nil {
-			if val, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && val > 0 {
-				return min(defaultConcurrency, val/2) // 给自己用一半线程
-			}
-		}
-		// 尝试读取 ulimit -u
-		if data, err := os.ReadFile("/proc/self/limits"); err == nil {
-			lines := strings.Split(string(data), "\n")
-			for _, line := range lines {
-				if strings.Contains(line, "max user processes") {
-					fields := strings.Fields(line)
-					if len(fields) >= 4 {
-						if val, err := strconv.Atoi(fields[3]); err == nil {
-							return min(defaultConcurrency, val/2)
-						}
-					}
-				}
-			}
-		}
-	case "windows":
-		return min(defaultConcurrency, 2048) // 保守估计
-	case "darwin": // macOS
-		return min(defaultConcurrency, 2048)
-	default:
-		return defaultConcurrency
-	}
-
-	return defaultConcurrency
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
