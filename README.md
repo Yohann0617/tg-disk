@@ -23,14 +23,14 @@ PROXY=
 BASE_URL=
 
 # Thread configuration (optional)
-# Download threads for concurrent chunk download (default: 8)
-DOWNLOAD_THREADS=8
+# Download threads for concurrent chunk download (default: 4)
+DOWNLOAD_THREADS=4
 # Frontend chunk size in MB (default: 20, due to Telegram limits)
 CHUNK_SIZE_MB=20
 # Frontend chunk upload concurrency (default: 4)
 CHUNK_CONCURRENT=4
 # Frontend file upload concurrency (default: 2)
-FILES_CONCURRENT=5
+FILES_CONCURRENT=2
 EOF
 ```
 
@@ -44,12 +44,12 @@ EOF
 | `ACCESS_PWD`       | 前端 Web 页面访问密码                          | 无      | **必填（强烈建议）**                 |
 | `PROXY`            | Telegram 访问代理（仅支持 HTTP）                | 空      | 可选，如 `http://127.0.0.1:7890` |
 | `BASE_URL`         | TG 机器人回复 `get` 或 `/get` 时生成的文件访问基础 URL | 空      | 可选，如 `https://example.com`   |
-| `DOWNLOAD_THREADS` | **后端** Telegram 分片下载并发线程数              | `8`    | `4 ~ 8`                      |
+| `DOWNLOAD_THREADS` | **后端** Telegram 分片下载并发线程数              | `4`    | `4 ~ 8`                      |
 | `CHUNK_SIZE_MB`    | **前端** 上传分片大小（MB，受 TG 限制）              | `20`   | `5 ~ 20`                     |
 | `CHUNK_CONCURRENT` | **前端** 分片上传并发数                         | `4`    | `3 ~ 6`                      |
-| `FILES_CONCURRENT` | **前端** 同时上传的文件数量                       | `5`    | `1 ~ 5`                      |
+| `FILES_CONCURRENT` | **前端** 同时上传的文件数量                       | `2`    | `1 ~ 5`                      |
 
-> 分片大小建议设置为5MB，否则内存占用太高
+> 分片大小建议设置为5MB，否则内存占用太高，如需上传超大文件，需取消设置响应超时。
 
 #### 2. docker-compose 一键部署
 
