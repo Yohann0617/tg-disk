@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/joho/godotenv"
@@ -221,6 +220,7 @@ func main() {
 
 				var downloadURL string
 				if fileName == "fileAll.txt" {
+					// 大文件，使用流式下载
 					downloadURL = fmt.Sprintf("%s/d?file_id=%s", strings.TrimRight(baseURL, "/"), fileID)
 				} else {
 					downloadURL = fmt.Sprintf("%s/d?file_id=%s&filename=%s",
@@ -462,6 +462,7 @@ func handleMergeChunks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fileID := msg.Document.FileID
+	// 大文件直接使用流式下载
 	downloadURL := fmt.Sprintf("%s://%s/d?file_id=%s", getScheme(r), r.Host, fileID)
 
 	result := UploadResult{
@@ -667,9 +668,33 @@ func handleDownload(w http.ResponseWriter, r *http.Request) {
 	origFilename := cleanLines[0]
 	blobFileIDs := cleanLines[1:]
 
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", origFilename))
-	w.Header().Set("Content-Type", "application/octet-stream")
+	// 直接使用流式模式下载
+	handleStreamDownloadSerial(w, r, origFilename, blobFileIDs)
+}
+
+// handleStreamDownloadSerial 串行下载并立即传输（解决并发等待问题）
+func handleStreamDownloadSerial(w http.ResponseWriter, r *http.Request, origFilename string, blobFileIDs []string) {
+	// 根据文件扩展名设置正确的 Content-Type
+	ext := filepath.Ext(origFilename)
+	contentType := mime.TypeByExtension(ext)
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	// 根据文件类型决定是预览还是下载
+	if isPreviewable(contentType) {
+		// 可预览的文件使用 inline
+		w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=\"%s\"", origFilename))
+	} else {
+		// 不可预览的文件强制下载
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", origFilename))
+	}
 	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Transfer-Encoding", "chunked")
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -677,100 +702,58 @@ func handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("开始流式下载合并大文件，文件名: %s，共 %d 个分块", origFilename, len(blobFileIDs))
+	log.Printf("开始串行流式下载：%s，共 %d 个分块", origFilename, len(blobFileIDs))
 
-	// Concurrent download with streaming output
-	// Download multiple chunks concurrently, but write them in order
-	type chunkResult struct {
-		index int
-		data  []byte
-		err   error
-	}
+	// 立即发送响应头
+	w.Write([]byte{})
+	flusher.Flush()
 
-	// Channel to receive downloaded chunks
-	resultChan := make(chan chunkResult, len(blobFileIDs))
-
-	// Goroutine pool to download chunks concurrently
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, downloadThreads)
-
+	// 串行下载并立即传输
 	for i, fid := range blobFileIDs {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(index int, fileID string) {
-			defer wg.Done()
-			defer func() { <-sem }()
+		// 检查连接是否断开
+		select {
+		case <-r.Context().Done():
+			log.Printf("客户端已断开，中止下载")
+			return
+		default:
+		}
 
-			tgBlob, err := bot.GetFile(tgbotapi.FileConfig{FileID: fileID})
-			if err != nil {
-				resultChan <- chunkResult{index: index, err: fmt.Errorf("获取分块 %d 失败: %v", index, err)}
-				return
-			}
+		log.Printf("正在下载分块 %d/%d", i+1, len(blobFileIDs))
 
-			blobURL := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", bot.Token, tgBlob.FilePath)
-			resp, err := http.Get(blobURL)
-			if err != nil {
-				resultChan <- chunkResult{index: index, err: fmt.Errorf("下载分块 %d 失败: %v", index, err)}
-				return
-			}
-			defer resp.Body.Close()
-
-			if resp.StatusCode != http.StatusOK {
-				resultChan <- chunkResult{index: index, err: fmt.Errorf("下载分块 %d 状态码异常: %d", index, resp.StatusCode)}
-				return
-			}
-
-			data, err := io.ReadAll(resp.Body)
-			if err != nil {
-				resultChan <- chunkResult{index: index, err: fmt.Errorf("读取分块 %d 失败: %v", index, err)}
-				return
-			}
-
-			resultChan <- chunkResult{index: index, data: data}
-			log.Printf("已下载分块 %d/%d，大小: %d 字节", index+1, len(blobFileIDs), len(data))
-		}(i, fid)
-	}
-
-	// Close channel when all downloads complete
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
-
-	// Collect results and maintain order
-	chunks := make([][]byte, len(blobFileIDs))
-	received := make([]bool, len(blobFileIDs))
-	receivedCount := 0
-	nextToWrite := 0
-
-	for result := range resultChan {
-		if result.err != nil {
-			log.Printf("下载错误: %v", result.err)
-			http.Error(w, result.err.Error(), http.StatusInternalServerError)
+		tgBlob, err := bot.GetFile(tgbotapi.FileConfig{FileID: fid})
+		if err != nil {
+			log.Printf("获取分块 %d 失败: %v", i+1, err)
+			http.Error(w, fmt.Sprintf("获取分块 %d 失败", i+1), http.StatusInternalServerError)
 			return
 		}
 
-		chunks[result.index] = result.data
-		received[result.index] = true
-		receivedCount++
-
-		// Write all consecutive chunks that are ready
-		for nextToWrite < len(blobFileIDs) && received[nextToWrite] {
-			log.Printf("写入分块 %d/%d，大小: %d 字节", nextToWrite+1, len(blobFileIDs), len(chunks[nextToWrite]))
-			_, err := w.Write(chunks[nextToWrite])
-			if err != nil {
-				log.Printf("写入响应失败（分块 %d）: %v", nextToWrite, err)
-				return
-			}
-			flusher.Flush()
-
-			// Free memory immediately after writing
-			chunks[nextToWrite] = nil
-			nextToWrite++
+		blobURL := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", bot.Token, tgBlob.FilePath)
+		resp, err := http.Get(blobURL)
+		if err != nil {
+			log.Printf("下载分块 %d 失败: %v", i+1, err)
+			http.Error(w, fmt.Sprintf("下载分块 %d 失败", i+1), http.StatusInternalServerError)
+			return
 		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			log.Printf("下载分块 %d 状态码异常: %d", i+1, resp.StatusCode)
+			http.Error(w, fmt.Sprintf("下载分块 %d 失败", i+1), http.StatusInternalServerError)
+			return
+		}
+
+		// 直接流式复制，边下载边传输
+		written, err := io.Copy(w, resp.Body)
+		if err != nil {
+			log.Printf("传输分块 %d 失败: %v", i+1, err)
+			return
+		}
+
+		flusher.Flush()
+		log.Printf("已传输分块 %d/%d，大小: %d 字节", i+1, len(blobFileIDs), written)
 	}
 
-	log.Printf("流式下载完成: %s，共 %d 个分块", origFilename, len(blobFileIDs))
+	log.Printf("串行下载完成: %s", origFilename)
 }
 
 func handleVerify(w http.ResponseWriter, r *http.Request) {
@@ -824,5 +807,16 @@ func isPreviewable(contentType string) bool {
 	return strings.HasPrefix(contentType, "image/") ||
 		strings.HasPrefix(contentType, "video/") ||
 		strings.HasPrefix(contentType, "audio/") ||
-		contentType == "application/pdf"
+		contentType == "application/pdf" ||
+		// Office 文档（现代浏览器可以预览）
+		contentType == "application/vnd.ms-excel" || // .xls
+		contentType == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" || // .xlsx
+		contentType == "application/vnd.ms-powerpoint" || // .ppt
+		contentType == "application/vnd.openxmlformats-officedocument.presentationml.presentation" || // .pptx
+		contentType == "application/msword" || // .doc
+		contentType == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || // .docx
+		// 文本文件
+		strings.HasPrefix(contentType, "text/") ||
+		contentType == "application/json" ||
+		contentType == "application/xml"
 }
