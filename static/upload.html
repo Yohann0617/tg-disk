@@ -422,6 +422,7 @@
     const fileInput = document.getElementById("file-input");
     const fileList = document.getElementById("file-list");
     let selectedFiles = [];
+    let fileIdCounter = 0; // 为每个文件分配唯一ID
 
     // Default values, will be overridden by server config
     let CHUNK_SIZE = 20 * 1024 * 1024; // 20MB per chunk
@@ -458,30 +459,39 @@
     fileInput.addEventListener("change", () => handleFiles(fileInput.files));
 
     function handleFiles(files) {
-        selectedFiles = Array.from(files);
-        fileList.innerHTML = "";
+        // 将新文件添加到现有列表，而不是替换
+        const newFiles = Array.from(files).map(file => {
+            const fileId = fileIdCounter++;
+            return {
+                id: fileId,
+                file: file,
+                uploading: false,
+                uploaded: false
+            };
+        });
         
-        if (selectedFiles.length > 0) {
-            document.getElementById('stats').style.display = 'flex';
-            document.getElementById('file-count').textContent = selectedFiles.length;
-            const totalBytes = selectedFiles.reduce((sum, file) => sum + file.size, 0);
-            document.getElementById('total-size').textContent = formatSize(totalBytes);
-        } else {
-            document.getElementById('stats').style.display = 'none';
-        }
+        selectedFiles = selectedFiles.concat(newFiles);
         
-        selectedFiles.forEach((file, index) => {
+        // 更新统计信息
+        document.getElementById('stats').style.display = 'flex';
+        document.getElementById('file-count').textContent = selectedFiles.length;
+        const totalBytes = selectedFiles.reduce((sum, item) => sum + item.file.size, 0);
+        document.getElementById('total-size').textContent = formatSize(totalBytes);
+        
+        // 只添加新文件的显示项，不清空已有的
+        newFiles.forEach((fileItem) => {
             const div = document.createElement("div");
             div.className = "file-item";
+            div.id = `file-item-${fileItem.id}`;
             div.innerHTML = `
                 <div class="file-info">
-                    <div class="file-name">📄 ${file.name}</div>
-                    <div class="file-size">${formatSize(file.size)}</div>
+                    <div class="file-name">📄 ${fileItem.file.name}</div>
+                    <div class="file-size">${formatSize(fileItem.file.size)}</div>
                 </div>
                 <div class="progress-bar">
-                    <div id="bar-${index}" class="progress-bar-inner"></div>
+                    <div id="bar-${fileItem.id}" class="progress-bar-inner"></div>
                 </div>
-                <div id="status-${index}" class="file-status">等待上传...</div>
+                <div id="status-${fileItem.id}" class="file-status">等待上传...</div>
             `;
             fileList.appendChild(div);
         });
@@ -512,13 +522,21 @@
         const uploadTasks = [];
 
         for (let index = 0; index < selectedFiles.length; index++) {
-            const file = selectedFiles[index];
+            const fileItem = selectedFiles[index];
+            // 跳过已经上传或正在上传的文件
+            if (fileItem.uploaded || fileItem.uploading) {
+                continue;
+            }
+            
+            fileItem.uploading = true;
             const task = fileQueue.add(async () => {
                 try {
-                    const result = await uploadSingleFile(file, index, pwd);
+                    const result = await uploadSingleFile(fileItem.file, fileItem.id, pwd);
                     uploadResponses.push(result);
+                    fileItem.uploaded = true;
                 } catch (e) {
-                    alert(`文件 ${file.name} 上传失败: ${e.message}`);
+                    alert(`文件 ${fileItem.file.name} 上传失败: ${e.message}`);
+                    fileItem.uploading = false;
                 }
                 filesUploaded++;
             });
@@ -555,10 +573,10 @@
         }
     }
 
-    async function uploadSingleFile(file, index, pwd) {
+    async function uploadSingleFile(file, fileId, pwd) {
         const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-        const statusEl = document.getElementById(`status-${index}`);
-        const progressBar = document.getElementById(`bar-${index}`);
+        const statusEl = document.getElementById(`status-${fileId}`);
+        const progressBar = document.getElementById(`bar-${fileId}`);
 
         // Small file: upload directly
         if (file.size <= CHUNK_SIZE) {
